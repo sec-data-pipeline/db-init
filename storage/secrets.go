@@ -3,58 +3,94 @@ package storage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/secretsmanager"
+	"github.com/joho/godotenv"
 )
 
-type Secrets struct {
-	DBHost string `json:"DB_HOST"`
-	DBPort string `json:"DB_PORT"`
-	DBUser string `json:"DB_USER"`
-	DBPass string `json:"DB_PASS"`
-	DBName string `json:"DB_NAME"`
+type Secrets interface {
+	GetConnParams() (*postgresParams, error)
 }
 
-func GetAWSConnParams() (*DBConnParams, error) {
-	region := os.Getenv("REGION")
-	if len(region) < 1 {
-		return nil, errors.New("Environment variable 'REGION' must be specified")
-	}
-	awsSession, err := session.NewSession(&aws.Config{
-		Region: aws.String(region),
-	})
-	if err != nil {
-		return nil, err
-	}
+type secretsManager struct {
+	client *secretsmanager.SecretsManager
+	arn    string
+}
+
+func NewSecretsManager(awsSession *session.Session, arn string) *secretsManager {
 	client := secretsmanager.New(awsSession)
-	secretsARN := os.Getenv("SECRETS")
-	if len(secretsARN) < 1 {
-		return nil, errors.New("Environment variable 'SECRETS' must be specified")
-	}
+	return &secretsManager{client: client, arn: arn}
+}
+
+func (s *secretsManager) GetConnParams() (*postgresParams, error) {
 	input := &secretsmanager.GetSecretValueInput{
-		SecretId: aws.String(os.Getenv("SECRETS")),
+		SecretId: aws.String(s.arn),
 	}
-	result, err := client.GetSecretValue(input)
+	value, err := s.client.GetSecretValue(input)
 	if err != nil {
 		return nil, err
 	}
-	secrets := &Secrets{}
-	if err := json.Unmarshal([]byte(*result.SecretString), secrets); err != nil {
+	params := &postgresParams{}
+	if err := json.Unmarshal([]byte(*value.SecretString), params); err != nil {
 		return nil, err
 	}
-	if len(secrets.DBHost) < 6 {
+	if len(params.DBHost) < 6 {
 		return nil, errors.New("'DB_HOST' secret corrupted")
 	}
-	connParams := &DBConnParams{
-		DBHost: secrets.DBHost[:len(secrets.DBHost)-5],
-		DBPort: secrets.DBPort,
-		DBName: secrets.DBName,
-		DBUser: secrets.DBUser,
-		DBPass: secrets.DBPass,
-		SSL:    "require",
+	params.DBHost = params.DBHost[:len(params.DBHost)-5]
+	params.ssl = "require"
+	return params, nil
+}
+
+type envLoader struct{}
+
+func NewEnvLoader() (*envLoader, error) {
+	err := godotenv.Load()
+	if err != nil {
+		return nil, err
 	}
-	return connParams, nil
+	return &envLoader{}, nil
+}
+
+func (l *envLoader) GetConnParams() (*postgresParams, error) {
+	host, err := envOrError("DB_HOST")
+	if err != nil {
+		return nil, err
+	}
+	port, err := envOrError("DB_PORT")
+	if err != nil {
+		return nil, err
+	}
+	name, err := envOrError("DB_NAME")
+	if err != nil {
+		return nil, err
+	}
+	user, err := envOrError("DB_USER")
+	if err != nil {
+		return nil, err
+	}
+	pass, err := envOrError("DB_PASS")
+	if err != nil {
+		return nil, err
+	}
+	return &postgresParams{
+		DBHost: host,
+		DBPort: port,
+		DBName: name,
+		DBUser: user,
+		DBPass: pass,
+		ssl:    "disable",
+	}, nil
+}
+
+func envOrError(key string) (string, error) {
+	value := os.Getenv(key)
+	if len(value) < 1 {
+		return "", errors.New(fmt.Sprintf("Environment variable '%s' must be specified", key))
+	}
+	return value, nil
 }
