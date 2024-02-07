@@ -127,7 +127,7 @@ func (db *postgresDB) createTableTable() error {
 func (db *postgresDB) createKeywordTable() error {
 	stmt := `CREATE TABLE keyword (
     id SERIAL PRIMARY KEY,
-    value TEXT UNIQUE NOT NULL
+    value VARCHAR(100) UNIQUE NOT NULL
   );`
 	_, err := db.Exec(stmt)
 	if err != nil {
